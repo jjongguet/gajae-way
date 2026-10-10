@@ -2257,6 +2257,13 @@ async function createInboundTurnLifecycle(
 						(part): part is string => part !== undefined,
 					)
 				: spokenParts;
+		// Local divergence (2026-10-10): a Discord answer rides a native reply to the
+		// triggering message in every origin kind (dm incl. group DM, channel, thread),
+		// matching the operator's Hermes bot so a bot answer is always visually attached
+		// to the question. Explicit [REPLY:…] still wins, and the Discord adapter sends
+		// reply references with failIfNotExists:false, so a vanished target degrades to
+		// a plain send instead of failing delivery.
+		//
 		// Slack replies default INTO a thread when the persona names no target:
 		// - a channel mention is answered in a thread rooted at the triggering
 		//   message (the room stays readable; the conversation continues in the
@@ -2269,15 +2276,17 @@ async function createInboundTurnLifecycle(
 		// note whose delivery would otherwise turn into a quoted reply nobody asked for.
 		const inboundThreadRoot = laneReport
 			? undefined
-			: origin.platform !== "slack"
-				? undefined
-				: origin.kind === "channel" &&
-						nonLoopback &&
-						isSlackMessageId(editedMessageId(row.message_id) ?? row.message_id)
-					? (editedMessageId(row.message_id) ?? row.message_id)
-					: origin.kind === "dm" && typeof engagement?.replyTo?.messageId === "string" && engagement.replyTo.messageId
-						? engagement.replyTo.messageId
-						: undefined;
+			: origin.platform === "discord" && nonLoopback
+				? row.message_id
+				: origin.platform !== "slack"
+					? undefined
+					: origin.kind === "channel" &&
+							nonLoopback &&
+							isSlackMessageId(editedMessageId(row.message_id) ?? row.message_id)
+						? (editedMessageId(row.message_id) ?? row.message_id)
+						: origin.kind === "dm" && typeof engagement?.replyTo?.messageId === "string" && engagement.replyTo.messageId
+							? engagement.replyTo.messageId
+							: undefined;
 		const planned: Array<{ readonly body: string; readonly replyTo?: string }> = [];
 		for (const part of parts) {
 			if (planned.length >= maxTurnParts) break;

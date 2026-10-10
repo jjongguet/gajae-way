@@ -1472,7 +1472,9 @@ test("[REPLY:id] parts thread to the referenced message and strip the directive"
 	expect(messages).toHaveLength(2);
 	expect(messages[0].payload).toMatchObject({ text: "threaded answer", replyToMessageId: "msg-42" });
 	expect(messages[1].payload.text).toBe("plain follow-up");
-	expect(messages[1].payload.replyToMessageId).toBeUndefined();
+	// Local divergence (2026-10-10): a part without an explicit [REPLY:] target
+	// still rides a native reply on the triggering message (dm origins included).
+	expect(messages[1].payload.replyToMessageId).toBe("m-1");
 	client.close();
 });
 
@@ -2545,4 +2547,59 @@ test("status reports each connected client's generation and flags an adapter old
 	stale.close();
 	fresh.close();
 	anonymous.close();
+});
+
+// Local divergence (2026-10-10): a Discord answer rides a native reply to the
+// triggering message in every origin kind, matching the operator's Hermes bot.
+// Slack keeps its own thread-root default; other platforms stay plain.
+test("discord terminal answers default to a native reply on the trigger message (dm and channel)", async () => {
+	directory = await mkdtemp(join(tmpdir(), "gajaeway-server-"));
+	const config: GatewayConfig = {
+		schemaVersion: 1,
+		home: directory,
+		configPath: join(directory, "config.json"),
+		socketPath: join(directory, "gateway.sock"),
+		dbPath: join(directory, "gateway.db"),
+		logVerbosity: "info",
+		dmPolicy: "open" as const,
+		channels: { c1: { engagement: "open" } },
+	};
+	const database = await GatewayDatabase.open(config.dbPath);
+	const sessionPort = sessionPortFromResponder({
+		bind: (key, epoch) => bindWorkFixture(key, epoch),
+		respond: async () => "붙여서 답한다",
+	});
+	attachTestBrokerOwnership(database, sessionPort, join(directory, "agent"));
+	server = await startUnixServer({ config, database, sessionPort, onStop: () => database.close() });
+	const client = await connect(config.socketPath);
+	client.send({ v: "0.1", type: "hello", payload: { supportedVersions: ["0.1"] } });
+	await waitFor(client.frames, 1);
+	const cases = [
+		{
+			messageId: "trigger-channel",
+			origin: { platform: "discord", kind: "channel", conversationId: "c1" },
+			engagement: { mentioned: true, group: true, authorId: "owner", authorName: "bellman" },
+		},
+		{
+			messageId: "trigger-dm",
+			origin: { platform: "discord", kind: "dm", conversationId: "d1", peerId: "owner" },
+			engagement: { mentioned: false, group: false, authorId: "owner" },
+		},
+	];
+	for (const { messageId, origin, engagement } of cases) {
+		client.send({
+			v: "0.1",
+			type: "request",
+			id: messageId,
+			verb: "chat.send",
+			params: { origin, text: `질문 ${messageId}`, messageId, engagement },
+		});
+		await Bun.sleep(500);
+	}
+	await Bun.sleep(600);
+	const messages = client.frames
+		.filter((f: any) => f.type === "event" && f.event === "chat.message" && f.payload?.text)
+		.map((f: any) => f.payload);
+	expect(messages.map((m: any) => m.replyToMessageId).sort()).toEqual(["trigger-channel", "trigger-dm"]);
+	client.close();
 });

@@ -225,7 +225,9 @@ for (const platform of ["slack", "discord", "telegram"] as const) {
 		const rows = f.database.deliveryRows();
 		expect(rows).toHaveLength(1);
 		const payload = JSON.parse(rows[0]!.payload_json);
-		expect(payload.replyToMessageId).toBe(platform === "slack" ? messageId : undefined);
+		// Local divergence (2026-10-10): Discord channel answers default to a native
+		// reply on the triggering message; Slack threads under it; telegram stays plain.
+		expect(payload.replyToMessageId).toBe(platform === "telegram" ? undefined : messageId);
 		if (platform === "slack") expect(f.posts).toEqual([["C1", "answer", "7.0"]]);
 	});
 }
