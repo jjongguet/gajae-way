@@ -1,0 +1,84 @@
+name: install-artifact
+
+# Fork-only, artifact-only build of an unreleased source combination for a
+# controlled install. Never publishes to npm, never creates a release, never
+# tags. The artifact is identified by the run's head SHA and the per-file
+# sha256 list it uploads, not by the package version string.
+on:
+  push:
+    branches:
+      - "build/**"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bunx biome ci packages/
+      - run: bunx tsc --noEmit -p tsconfig.json
+      - run: bun test packages/
+
+  build-binaries:
+    name: build-${{ matrix.platform }}-${{ matrix.arch }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      # Ad-hoc signature with the stable dev.gajaeway.* identifiers (scripts/sign-dist.sh).
+      - run: bun run build
+        env:
+          GAJAEWAY_CODESIGN_IDENTITY: "-"
+      - name: Package binaries and record provenance
+        run: |
+          mkdir -p release
+          tar -czf "release/gajaeway-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" -C dist .
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "bun=$(bun --version)"
+          } > "release/gajaeway-${{ matrix.platform }}-${{ matrix.arch }}.provenance"
+          (cd dist && shasum -a 256 gajaeway gajaeway-gateway gajaeway-discord gajaeway-telegram gajaeway-slack gajaeway-admin package.json) > "release/gajaeway-${{ matrix.platform }}-${{ matrix.arch }}.files.sha256"
+          (cd release && shasum -a 256 "gajaeway-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz") > "release/gajaeway-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256"
+          cat release/*.provenance release/*.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gajaeway-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
