@@ -476,11 +476,21 @@ export async function appendDaily(
 	const path = join(root, await captureRoot(root, registry), `${date}.md`);
 	// Each field must stay on one physical line: a captured newline would let reply text
 	// containing "## " forge an entry delimiter and escape its own list item.
-	const bounded = (text: string) =>
-		text
-			.slice(0, 500)
+	const bounded = (text: string) => {
+		// Budget and omission count use original code points, before stripping NULs
+		// or escaping CR/LF. Only the retained prefix is copied; the marker is extra.
+		let codePoints = 0;
+		let end = 0;
+		for (const character of text) {
+			if (codePoints < 500) end += character.length;
+			codePoints++;
+		}
+		const payload = text
+			.slice(0, end)
 			.replaceAll("\u0000", "")
 			.replaceAll(/\r\n|\r|\n/g, "\\n");
+		return codePoints > 500 ? `${payload}… [truncated ${codePoints - 500} chars]` : payload;
+	};
 	const intentMarker = intentId ? `- intent-id: ${intentId}\n` : "";
 	const entry = `\n## ${new Date().toISOString()}\n\n- origin: ${bounded(originRefJson)}\n${intentMarker}- user: ${bounded(userText)}\n- reply: ${bounded(replyText)}\n`;
 	await appendFile(path, entry, { encoding: "utf8" });
