@@ -101,6 +101,89 @@ test("carriage returns are escaped and NUL bytes are stripped", async () => {
 	expect(body.split("\n").filter((line) => line.startsWith("- user: "))).toHaveLength(1);
 });
 
+test.each([
+	0, 499, 500, 501, 502,
+])("capture bounds each field to 500 original Unicode code points (%i)", async (length) => {
+	home = await mkdtemp(join(tmpdir(), "gajaeway-capture-boundary-"));
+	const root = await initializeMemory(home);
+	const text = "가".repeat(length);
+	const expected = "가".repeat(Math.min(length, 500)) + (length > 500 ? `… [truncated ${length - 500} chars]` : "");
+
+	const path = await appendDaily(root, text, text, text);
+	const body = await readFile(join(root, path), "utf8");
+	expect(body.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+		`- origin: ${expected}`,
+		`- user: ${expected}`,
+		`- reply: ${expected}`,
+	]);
+});
+
+test("a synthetic 5k reply keeps 500 code points and reports exactly 4500 omitted", async () => {
+	home = await mkdtemp(join(tmpdir(), "gajaeway-capture-5k-"));
+	const root = await initializeMemory(home);
+
+	const path = await appendDaily(root, "{}", "question", "답변".repeat(2500));
+	const body = await readFile(join(root, path), "utf8");
+
+	expect(body.split("\n").filter((line) => line.startsWith("- reply: "))).toEqual([
+		`- reply: ${"답변".repeat(250)}… [truncated 4500 chars]`,
+	]);
+	expect(body.split("\n").filter((line) => line.startsWith("## "))).toHaveLength(1);
+});
+
+test.each([
+	["the old UTF-16 cut", `${"a".repeat(499)}😀`, `${"a".repeat(499)}😀`],
+	["a following BMP character", `${"a".repeat(498)}😀z`, `${"a".repeat(498)}😀z`],
+	["a truncated emoji suffix", `${"a".repeat(499)}😀🚀🧪`, `${"a".repeat(499)}😀… [truncated 2 chars]`],
+	["the first omitted code point", `${"a".repeat(500)}😀`, `${"a".repeat(500)}… [truncated 1 chars]`],
+	["500 emoji", "😀".repeat(500), "😀".repeat(500)],
+	["501 emoji", "😀".repeat(501), `${"😀".repeat(500)}… [truncated 1 chars]`],
+])("capture keeps emoji whole at %s", async (_boundary, text, expected) => {
+	home = await mkdtemp(join(tmpdir(), "gajaeway-capture-emoji-"));
+	const root = await initializeMemory(home);
+
+	const path = await appendDaily(root, text, text, text);
+	const bytes = await readFile(join(root, path));
+	const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+
+	expect(body).not.toContain("\uFFFD");
+	expect(body.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+		`- origin: ${expected}`,
+		`- user: ${expected}`,
+		`- reply: ${expected}`,
+	]);
+});
+
+test.each([
+	["a retained NUL at exactly 500", `${"a".repeat(499)}\u0000`, "a".repeat(499)],
+	["a retained NUL before truncation", `${"a".repeat(499)}\u0000z`, `${"a".repeat(499)}… [truncated 1 chars]`],
+	["an omitted NUL", `${"a".repeat(500)}\u0000`, `${"a".repeat(500)}… [truncated 1 chars]`],
+	["a retained LF at exactly 500", `${"a".repeat(499)}\n`, `${"a".repeat(499)}\\n`],
+	["a retained CRLF", `${"a".repeat(498)}\r\nz`, `${"a".repeat(498)}\\n… [truncated 1 chars]`],
+	["a CRLF crossing the cut", `${"a".repeat(499)}\r\nz`, `${"a".repeat(499)}\\n… [truncated 2 chars]`],
+	[
+		"a NUL stripped before CRLF escaping",
+		`${"a".repeat(497)}\r\u0000\nz`,
+		`${"a".repeat(497)}\\n… [truncated 1 chars]`,
+	],
+	["omitted CRLF, NUL and emoji", `${"a".repeat(500)}\r\n\u0000😀`, `${"a".repeat(500)}… [truncated 4 chars]`],
+])("capture counts original code points before sanitizing %s", async (_boundary, text, expected) => {
+	home = await mkdtemp(join(tmpdir(), "gajaeway-capture-controls-"));
+	const root = await initializeMemory(home);
+
+	const path = await appendDaily(root, text, text, text);
+	const body = await readFile(join(root, path), "utf8");
+
+	expect(body).not.toContain("\u0000");
+	expect(body).not.toContain("\r");
+	expect(body.split("\n").filter((line) => line.startsWith("## "))).toHaveLength(1);
+	expect(body.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+		`- origin: ${expected}`,
+		`- user: ${expected}`,
+		`- reply: ${expected}`,
+	]);
+});
+
 test("entry count grows by exactly one per capture", async () => {
 	home = await mkdtemp(join(tmpdir(), "gajaeway-doctrine-"));
 	const root = await initializeMemory(home);
